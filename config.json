@@ -1,0 +1,12 @@
+{
+  "twitterCredentials": {
+    "username": "keisuke192-0046@outlook.jp",
+    "password": "Kt4A6d9A58ZYsg"
+  },
+  "downloadSettings": {
+    "batchSize": 50,
+    "batchDelay": 5000,
+    "rateLimitWaitTime": 900000,
+    "maxRateLimitRetries": 3
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "twitter-likejs-download",
+  "version": "1.0.0",
+  "description": "",
+  "main": "like.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "download": "node download-tweets.js",
+    "status": "node -e \"const fs=require('fs-extra');const path=require('path');const f=path.join(__dirname,'processed-tweets.json');if(fs.existsSync(f)){const d=fs.readJSONSync(f);console.log('処理状況:\\n- 成功: '+Object.keys(d.successful).length+'件\\n- 失敗: '+Object.keys(d.failed).length+'件\\n- メディアなし: '+Object.keys(d.noMedia).length+'件')}else{console.log('まだ処理されたツイートはありません')}\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "fs-extra": "^11.3.0",
+    "readline": "^1.3.0",
+    "stream-json": "^1.9.1",
+    "twitter-downloader": "^1.1.8"
+  }
+}
