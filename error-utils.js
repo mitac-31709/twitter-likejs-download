@@ -41,7 +41,32 @@ function listErrors() {
     console.log(`  日時: ${error.timestamp}`);
     console.log(`  再試行回数: ${error.retry_count}`);
     if (error.details) {
-      console.log(`  詳細: ${JSON.stringify(error.details, null, 2)}`);
+      // HTTPステータスコードの情報を優先表示
+      if (error.details.statusCode) {
+        console.log(`  HTTPステータス: ${error.details.statusCode}`);
+      }
+      if (error.details.isTimeout) {
+        console.log(`  タイムアウト: はい`);
+      }
+      if (error.details.url) {
+        console.log(`  URL: ${error.details.url}`);
+      }
+      if (error.details.mediaType) {
+        console.log(`  メディアタイプ: ${error.details.mediaType}`);
+      }
+      if (error.details.message) {
+        console.log(`  エラーメッセージ: ${error.details.message}`);
+      }
+      // その他の詳細情報
+      const otherDetails = { ...error.details };
+      delete otherDetails.statusCode;
+      delete otherDetails.isTimeout;
+      delete otherDetails.url;
+      delete otherDetails.mediaType;
+      delete otherDetails.message;
+      if (Object.keys(otherDetails).length > 0) {
+        console.log(`  その他: ${JSON.stringify(otherDetails, null, 2)}`);
+      }
     }
   });
 }
@@ -101,7 +126,32 @@ function showErrorsByType(errorType) {
     console.log(`  日時: ${error.timestamp}`);
     console.log(`  再試行回数: ${error.retry_count}`);
     if (error.details) {
-      console.log(`  詳細: ${JSON.stringify(error.details, null, 2)}`);
+      // HTTPステータスコードの情報を優先表示
+      if (error.details.statusCode) {
+        console.log(`  HTTPステータス: ${error.details.statusCode}`);
+      }
+      if (error.details.isTimeout) {
+        console.log(`  タイムアウト: はい`);
+      }
+      if (error.details.url) {
+        console.log(`  URL: ${error.details.url}`);
+      }
+      if (error.details.mediaType) {
+        console.log(`  メディアタイプ: ${error.details.mediaType}`);
+      }
+      if (error.details.message) {
+        console.log(`  エラーメッセージ: ${error.details.message}`);
+      }
+      // その他の詳細情報
+      const otherDetails = { ...error.details };
+      delete otherDetails.statusCode;
+      delete otherDetails.isTimeout;
+      delete otherDetails.url;
+      delete otherDetails.mediaType;
+      delete otherDetails.message;
+      if (Object.keys(otherDetails).length > 0) {
+        console.log(`  その他: ${JSON.stringify(otherDetails, null, 2)}`);
+      }
     }
   });
 }

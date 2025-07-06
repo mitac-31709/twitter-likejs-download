@@ -43,16 +43,82 @@ function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https') ? https : http;
     const file = fs.createWriteStream(dest);
-    mod.get(url, (response) => {
-      if (response.statusCode !== 200) {
-        reject(new Error(`Failed to get '${url}' (${response.statusCode})`));
+    
+    const request = mod.get(url, (response) => {
+      // HTTPステータスコードの詳細な処理
+      if (response.statusCode === 404) {
+        const error = new Error(`HTTP 404 Not Found: ${url}`);
+        error.statusCode = 404;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
         return;
       }
+      
+      if (response.statusCode === 403) {
+        const error = new Error(`HTTP 403 Forbidden: ${url}`);
+        error.statusCode = 403;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      if (response.statusCode === 429) {
+        const error = new Error(`HTTP 429 Too Many Requests: ${url}`);
+        error.statusCode = 429;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      if (response.statusCode === 401) {
+        const error = new Error(`HTTP 401 Unauthorized: ${url}`);
+        error.statusCode = 401;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      if (response.statusCode >= 400 && response.statusCode < 500) {
+        const error = new Error(`HTTP ${response.statusCode} Client Error: ${url}`);
+        error.statusCode = response.statusCode;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      if (response.statusCode >= 500) {
+        const error = new Error(`HTTP ${response.statusCode} Server Error: ${url}`);
+        error.statusCode = response.statusCode;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      if (response.statusCode !== 200) {
+        const error = new Error(`HTTP ${response.statusCode} Unknown Error: ${url}`);
+        error.statusCode = response.statusCode;
+        error.isHttpError = true;
+        fs.unlink(dest, () => reject(error));
+        return;
+      }
+      
+      // 成功時はファイルに書き込み
       response.pipe(file);
       file.on('finish', () => file.close(resolve));
-    }).on('error', (err) => {
+    });
+    
+    // ネットワークエラーの処理
+    request.on('error', (err) => {
       // エラー時はファイルを削除
       fs.unlink(dest, () => reject(err));
+    });
+    
+    // タイムアウトの設定（30秒）
+    request.setTimeout(30000, () => {
+      const error = new Error(`Request timeout: ${url}`);
+      error.isTimeout = true;
+      request.destroy();
+      fs.unlink(dest, () => reject(error));
     });
   });
 }
@@ -191,14 +257,27 @@ async function processTweetDir(tweetId) {
               errorCount++;
               // エラーを記録
               const errorType = determineErrorType(e);
-              errorManager.addError(tweetId, errorType, { 
+              const errorDetails = { 
                 url: media.image,
                 message: e.message,
                 mediaType: 'photo',
                 filename: filename,
                 filePath: filePath,
                 tweetId: tweetId
-              });
+              };
+              
+              // HTTPステータスコードの情報を追加
+              if (e.statusCode) {
+                errorDetails.statusCode = e.statusCode;
+                errorDetails.isHttpError = e.isHttpError;
+              }
+              
+              // タイムアウト情報を追加
+              if (e.isTimeout) {
+                errorDetails.isTimeout = true;
+              }
+              
+              errorManager.addError(tweetId, errorType, errorDetails);
               // 失敗時はファイルを削除（念のため）
               if (fs.existsSync(filePath)) {
                 fs.unlinkSync(filePath);
@@ -237,7 +316,7 @@ async function processTweetDir(tweetId) {
                 errorCount++;
                 // エラーを記録
                 const errorType = determineErrorType(e);
-                errorManager.addError(tweetId, errorType, { 
+                const errorDetails = { 
                   url: url,
                   message: e.message,
                   mediaType: 'video',
@@ -245,7 +324,20 @@ async function processTweetDir(tweetId) {
                   filePath: filePath,
                   bitrate: sorted[0].bitrate,
                   tweetId: tweetId
-                });
+                };
+                
+                // HTTPステータスコードの情報を追加
+                if (e.statusCode) {
+                  errorDetails.statusCode = e.statusCode;
+                  errorDetails.isHttpError = e.isHttpError;
+                }
+                
+                // タイムアウト情報を追加
+                if (e.isTimeout) {
+                  errorDetails.isTimeout = true;
+                }
+                
+                errorManager.addError(tweetId, errorType, errorDetails);
                 // 失敗時はファイルを削除（念のため）
                 if (fs.existsSync(filePath)) {
                   fs.unlinkSync(filePath);
@@ -281,14 +373,27 @@ async function processTweetDir(tweetId) {
                   errorCount++;
                   // エラーを記録
                   const errorType = determineErrorType(e);
-                  errorManager.addError(tweetId, errorType, { 
+                  const errorDetails = { 
                     url: media.cover,
                     message: e.message,
                     mediaType: 'video_cover',
                     filename: coverName,
                     filePath: coverPath,
                     tweetId: tweetId
-                  });
+                  };
+                  
+                  // HTTPステータスコードの情報を追加
+                  if (e.statusCode) {
+                    errorDetails.statusCode = e.statusCode;
+                    errorDetails.isHttpError = e.isHttpError;
+                  }
+                  
+                  // タイムアウト情報を追加
+                  if (e.isTimeout) {
+                    errorDetails.isTimeout = true;
+                  }
+                  
+                  errorManager.addError(tweetId, errorType, errorDetails);
                   // 失敗時はファイルを削除（念のため）
                   if (fs.existsSync(coverPath)) {
                     fs.unlinkSync(coverPath);
