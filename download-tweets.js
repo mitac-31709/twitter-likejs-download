@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
 const StreamValues = require('stream-json/streamers/StreamValues');
+const { ErrorManager, ERROR_TYPES, determineErrorType } = require('./error-manager');
 
 // 設定ファイルのパス
 const CONFIG_FILE_PATH = path.join(__dirname, 'config.json');
@@ -27,6 +28,9 @@ let CONFIG = {
     password: ''
   }
 };
+
+// エラー管理インスタンス
+const errorManager = new ErrorManager();
 
 // 設定ファイルから設定を読み込む
 function loadConfig() {
@@ -84,6 +88,23 @@ async function saveProcessedTweets(processed) {
   }
 }
 
+// ツイートが処理可能かチェック
+function isTweetProcessable(tweetId, processed) {
+  // 既に処理済みの場合はスキップ
+  if (processed.successful[tweetId] || processed.failed[tweetId] || processed.noMedia[tweetId]) {
+    return false;
+  }
+  
+  // エラーが発生している場合はスキップ
+  if (errorManager.hasError(tweetId)) {
+    const error = errorManager.getError(tweetId);
+    log(`エラーが発生したツイートをスキップ: ${tweetId} (${error.type})`);
+    return false;
+  }
+  
+  return true;
+}
+
 // ツイートのダウンロード
 async function downloadTweet(tweetId, retryCount = 0) {
   return new Promise((resolve) => {
@@ -137,6 +158,7 @@ async function downloadTweet(tweetId, retryCount = 0) {
 
       if (isAuthError) {
         removeIfEmpty(outputPath);
+        errorManager.addError(tweetId, ERROR_TYPES.AUTH_ERROR, { output });
         resolve({ 
           success: false, 
           noMedia: false, 
@@ -159,8 +181,12 @@ async function downloadTweet(tweetId, retryCount = 0) {
         resolve({ success: false, noMedia: true, rateLimit: false, authError: false, output });
       } else if (hasError) {
         removeIfEmpty(outputPath);
+        const errorType = determineErrorType(new Error('Download failed'), output);
+        errorManager.addError(tweetId, errorType, { output });
         resolve({ success: false, noMedia: false, rateLimit: false, authError: false, output });
       } else {
+        // 成功した場合はエラーを削除
+        errorManager.removeError(tweetId);
         resolve({ success: true, noMedia: false, rateLimit: false, authError: false, output });
       }
     });
@@ -242,9 +268,7 @@ async function main() {
     
     // 未処理のツイートをフィルタリング
     const tweetIds = allTweetIds.filter(tweetId => 
-      !processed.successful[tweetId] && 
-      !processed.failed[tweetId] && 
-      !processed.noMedia[tweetId]
+      isTweetProcessable(tweetId, processed)
     );
     
     log(`未処理のツイート: ${tweetIds.length}件`);
@@ -316,6 +340,9 @@ async function main() {
     log(`- 成功: ${processedCount}件`);
     log(`- 失敗: ${failedCount}件`);
     log(`- メディアなし: ${noMediaCount}件`);
+    
+    // エラー統計の表示
+    errorManager.printSummary();
     
   } catch (error) {
     log(`予期せぬエラーが発生しました: ${error.message}`);
