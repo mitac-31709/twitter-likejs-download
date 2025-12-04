@@ -7,7 +7,25 @@ const BATCH_SIZE = 1000;
 
 // processed-tweets.jsonの読み込み
 const processedPath = path.join(__dirname, 'processed-tweets.json');
-const processed = fs.readJSONSync(processedPath);
+
+// 初回実行などでファイルが存在しない場合にも落ちないように安全に読み込む
+let processed = {
+  successful: {},
+  failed: {},
+  noMedia: {}
+};
+
+try {
+  if (fs.existsSync(processedPath)) {
+    const loaded = fs.readJSONSync(processedPath);
+    processed.successful = loaded.successful || {};
+    processed.failed = loaded.failed || {};
+    processed.noMedia = loaded.noMedia || {};
+  }
+} catch (e) {
+  console.error(`processed-tweets.json の読み込みに失敗しました: ${e.message}`);
+}
+
 const successful = processed.successful || {};
 
 const downloadsDir = path.join(__dirname, 'downloads');
