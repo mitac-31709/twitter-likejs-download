@@ -14,7 +14,8 @@ const ERROR_TYPES = {
   RATE_LIMIT: 'rate_limit',                     // レート制限
   AUTH_ERROR: 'auth_error',                     // 認証エラー
   NETWORK_ERROR: 'network_error',               // ネットワークエラー
-  UNKNOWN_ERROR: 'unknown_error'                // その他のエラー
+  UNKNOWN_ERROR: 'unknown_error',               // その他のエラー
+  NOT_FOUND: 'not_found'                        // ローカルに必要なファイルやJSONが存在しない
 };
 
 // エラー管理クラス

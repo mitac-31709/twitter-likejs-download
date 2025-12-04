@@ -1,8 +1,6 @@
 const fs = require('fs-extra');
-const { spawn } = require('child_process');
-const readline = require('readline');
 const path = require('path');
-const StreamValues = require('stream-json/streamers/StreamValues');
+const { TwitterDL } = require('twitter-downloader');
 const { ErrorManager, ERROR_TYPES, determineErrorType } = require('./error-manager');
 
 // 設定ファイルのパス
@@ -21,12 +19,7 @@ let CONFIG = {
   // レート制限時の待機時間（ミリ秒）- デフォルトで15分
   rateLimitWaitTime: 15 * 60 * 1000,
   // レート制限時の最大再試行回数
-  maxRateLimitRetries: 3,
-  // Twitter認証情報
-  twitterCredentials: {
-    username: '',
-    password: ''
-  }
+  maxRateLimitRetries: 3
 };
 
 // エラー管理インスタンス
@@ -46,11 +39,6 @@ function loadConfig() {
         CONFIG.maxRateLimitRetries = configData.downloadSettings.maxRateLimitRetries || CONFIG.maxRateLimitRetries;
       }
       
-      // 認証情報を適用
-      if (configData.twitterCredentials) {
-        CONFIG.twitterCredentials = configData.twitterCredentials;
-      }
-      
       return true;
     }
   } catch (error) {
@@ -65,6 +53,27 @@ function log(message) {
   const logMessage = `[${timestamp}] ${message}\n`;
   console.log(message);
   fs.appendFileSync(CONFIG.logFile, logMessage);
+}
+
+// twitter-media-downloader のASCIIアートなど、ノイズの多い出力を整形するヘルパー
+function formatErrorOutput(rawOutput) {
+  if (!rawOutput) return '';
+  const lines = rawOutput
+    .toString()
+    .split(/\r?\n/)
+    // 空行と純粋な装飾行(記号ばかり)を落とす
+    .filter(line => line.trim() && /[a-zA-Z0-9ぁ-んァ-ン一-龠]/.test(line));
+
+  // 有効な行がなければ空文字を返す
+  if (lines.length === 0) return '';
+
+  // 先頭数行だけを採用し、ログを暴走させない
+  const MAX_LINES = 5;
+  const sliced = lines.slice(0, MAX_LINES);
+  if (lines.length > MAX_LINES) {
+    sliced.push(`... (${lines.length - MAX_LINES} 行 省略)`);
+  }
+  return sliced.join(' / ');
 }
 
 // 処理済みツイートの読み込み
@@ -89,108 +98,111 @@ async function saveProcessedTweets(processed) {
 }
 
 // ツイートが処理可能かチェック
-function isTweetProcessable(tweetId, processed) {
+// ※ 高速化のため、メイン処理からは事前に作ったエラーIDのSetを渡して使う
+function isTweetProcessable(tweetId, processed, errorIdSet = null, enableLog = true) {
   // 既に処理済みの場合はスキップ
   if (processed.successful[tweetId] || processed.failed[tweetId] || processed.noMedia[tweetId]) {
     return false;
   }
   
   // エラーが発生している場合はスキップ
-  if (errorManager.hasError(tweetId)) {
-    const error = errorManager.getError(tweetId);
-    log(`エラーが発生したツイートをスキップ: ${tweetId} (${error.type})`);
+  const hasErr = errorIdSet ? errorIdSet.has(tweetId) : errorManager.hasError(tweetId);
+  if (hasErr) {
+    if (enableLog) {
+      const error = errorManager.getError(tweetId);
+      log(`エラーが発生したツイートをスキップ: ${tweetId} (${error?.type || 'unknown'})`);
+    }
     return false;
   }
   
   return true;
 }
 
-// ツイートのダウンロード
+// ツイートのダウンロード（twitter-media-downloader.exe 非依存版）
 async function downloadTweet(tweetId, retryCount = 0) {
-  return new Promise((resolve) => {
-    const twmdPath = path.join(__dirname, 'twitter-media-downloader.exe');
-    const outputPath = path.join(CONFIG.outputDir, tweetId);
+  const tweetUrl = `https://twitter.com/i/web/status/${tweetId}`;
+  const outputPath = path.join(CONFIG.outputDir, tweetId);
 
-    // フォルダがなければ作成
-    fs.ensureDirSync(outputPath);
+  try {
+    // TwitterDL でツイート情報を取得
+    const res = await TwitterDL(tweetUrl);
 
-    // コマンドライン引数の準備
-    const args = ['-t', tweetId, '-o', outputPath, '-a'];
-    
-    // 認証情報があれば追加
-    if (CONFIG.twitterCredentials && CONFIG.twitterCredentials.username && CONFIG.twitterCredentials.password) {
-      args.push('-u', CONFIG.twitterCredentials.username);
-      args.push('-p', CONFIG.twitterCredentials.password);
+    if (res.status !== 'success') {
+      const message = res.message || 'Unknown error';
+      const error = new Error(message);
+      const isGuestTokenError = message.includes('Failed to get Guest Token');
+
+      // Guest Token が取れない場合は、実質的にレート制限扱いとして再試行させる
+      if (isGuestTokenError && retryCount < CONFIG.maxRateLimitRetries) {
+        return {
+          success: false,
+          noMedia: false,
+          rateLimit: true,
+          authError: false,
+          retryCount: retryCount + 1,
+          output: message,
+        };
+      }
+
+      const errorType = determineErrorType(error, message) || ERROR_TYPES.RATE_LIMIT;
+
+      // エラーを記録
+      errorManager.addError(tweetId, errorType, {
+        message,
+        tweetId,
+        tweetUrl,
+      });
+
+      // それ以外のケースは通常の失敗として扱う
+      return {
+        success: false,
+        noMedia: false,
+        rateLimit: false,
+        authError: false,
+        output: message,
+      };
     }
 
-    const process = spawn(twmdPath, args);
+    const tweetData = res.result;
 
-    let output = '';
+    // 出力ディレクトリ作成
+    await fs.ensureDir(outputPath);
 
-    process.stdout.on('data', (data) => {
-      output += data.toString();
+    // tweet-data.json として保存（既存の media-check-and-download.js の想定形式と整合）
+    const jsonPath = path.join(outputPath, 'tweet-data.json');
+    await fs.writeJSON(jsonPath, tweetData, { spaces: 2 });
+
+    // メディア有無による判定
+    const hasMedia = Array.isArray(tweetData.media) && tweetData.media.length > 0;
+
+    // 成功した場合はエラーを削除
+    errorManager.removeError(tweetId);
+
+    return {
+      success: hasMedia,
+      noMedia: !hasMedia,
+      rateLimit: false,
+      authError: false,
+      output: '',
+    };
+  } catch (e) {
+    const message = e.message || String(e);
+    const errorType = determineErrorType(e);
+
+    errorManager.addError(tweetId, errorType || ERROR_TYPES.DOWNLOAD_FAILED, {
+      message,
+      tweetId,
+      tweetUrl,
     });
 
-    process.stderr.on('data', (data) => {
-      output += data.toString();
-    });
-
-    process.on('close', (code) => {
-      const hasError = code !== 0;
-      const hasNoMedia = output.includes('No media found') || output.includes('contains no media');
-      const isRateLimit = output.includes('response status 429 Too Many Requests') || 
-                          output.includes('Rate limit exceeded');
-      const isAuthError = output.includes('Authentication failed') || 
-                         output.includes('Login failed') ||
-                         output.includes('Unauthorized') ||
-                         output.includes('Invalid credentials');
-      
-      // フォルダが空なら削除する関数
-      function removeIfEmpty(dir) {
-        try {
-          if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
-            fs.rmdirSync(dir);
-          }
-        } catch (e) {
-          // 削除失敗時は無視
-        }
-      }
-
-      if (isAuthError) {
-        removeIfEmpty(outputPath);
-        errorManager.addError(tweetId, ERROR_TYPES.AUTH_ERROR, { output });
-        resolve({ 
-          success: false, 
-          noMedia: false, 
-          rateLimit: false,
-          authError: true, 
-          output 
-        });
-      } else if (isRateLimit && retryCount < CONFIG.maxRateLimitRetries) {
-        removeIfEmpty(outputPath);
-        resolve({ 
-          success: false, 
-          noMedia: false, 
-          rateLimit: true,
-          authError: false, 
-          retryCount: retryCount + 1,
-          output 
-        });
-      } else if (hasNoMedia) {
-        removeIfEmpty(outputPath);
-        resolve({ success: false, noMedia: true, rateLimit: false, authError: false, output });
-      } else if (hasError) {
-        removeIfEmpty(outputPath);
-        const errorType = determineErrorType(new Error('Download failed'), output);
-        errorManager.addError(tweetId, errorType, { output });
-        resolve({ success: false, noMedia: false, rateLimit: false, authError: false, output });
-      } else {
-        // 成功した場合はエラーを削除
-        errorManager.removeError(tweetId);
-        resolve({ success: true, noMedia: false, rateLimit: false, authError: false, output });
-      }
-    });
-  });
+    return {
+      success: false,
+      noMedia: false,
+      rateLimit: false,
+      authError: false,
+      output: message,
+    };
+  }
 }
 
 // like.jsからツイートIDを抽出
@@ -244,13 +256,6 @@ async function main() {
     const configLoaded = loadConfig();
     if (configLoaded) {
       log('設定ファイルから設定を読み込みました');
-      
-      // 認証情報の確認
-      if (CONFIG.twitterCredentials.username && CONFIG.twitterCredentials.password) {
-        log(`ユーザー "${CONFIG.twitterCredentials.username}" としてログインします`);
-      } else {
-        log('認証情報が設定されていません。匿名モードで実行します');
-      }
     } else {
       log('設定ファイルが見つからないため、デフォルト設定で実行します');
     }
@@ -265,13 +270,35 @@ async function main() {
     
     // ツイートIDの抽出
     const allTweetIds = await extractTweetIds();
-    
-    // 未処理のツイートをフィルタリング
-    const tweetIds = allTweetIds.filter(tweetId => 
-      isTweetProcessable(tweetId, processed)
-    );
+
+    // 既知のエラーIDをSetにして、高速にスキップできるようにする
+    const currentErrors = errorManager.getErrorList();
+    const errorIdSet = new Set(currentErrors.map(e => e.tweetId));
+
+    // 未処理のツイートをフィルタリング（ログはまとめて出す）
+    let skippedAlreadyProcessed = 0;
+    let skippedByError = 0;
+    const tweetIds = allTweetIds.filter(tweetId => {
+      // 既に処理済みの場合
+      if (processed.successful[tweetId] || processed.failed[tweetId] || processed.noMedia[tweetId]) {
+        skippedAlreadyProcessed++;
+        return false;
+      }
+      // エラー記録がある場合
+      if (errorIdSet.has(tweetId)) {
+        skippedByError++;
+        return false;
+      }
+      return true;
+    });
     
     log(`未処理のツイート: ${tweetIds.length}件`);
+    if (skippedAlreadyProcessed > 0) {
+      log(`既に処理済みのためスキップ: ${skippedAlreadyProcessed}件`);
+    }
+    if (skippedByError > 0) {
+      log(`エラー記録があるためスキップ: ${skippedByError}件`);
+    }
     
     // バッチ処理
     for (let i = 0; i < tweetIds.length; i += CONFIG.batchSize) {
@@ -310,11 +337,11 @@ async function main() {
               log(`メディアなし: ${tweetId}`);
             } else {
               processed.failed[tweetId] = new Date().toISOString();
-              log(`失敗: ${tweetId} - ${retryResult.output}`);
+            log(`失敗: ${tweetId} - ${formatErrorOutput(retryResult.output)}`);
             }
           } else {
             processed.failed[tweetId] = new Date().toISOString();
-            log(`失敗: ${tweetId} - ${result.output}`);
+          log(`失敗: ${tweetId} - ${formatErrorOutput(result.output)}`);
           }
         } catch (error) {
           processed.failed[tweetId] = new Date().toISOString();
