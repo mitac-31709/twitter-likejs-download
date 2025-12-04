@@ -2,3 +2,7 @@
 /.history
 /node_modules
 /user-analysis/*.json
+/download-log.txt
+/processed-tweets.json
+/error-tweets.json
+/twitter-media-downloader.exe
